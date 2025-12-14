@@ -205,3 +205,12 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Plaud auth tokens
+**/plaud_token.json
+
+# Logs directory and log files
+logs/
+*.log
+network_logs_*.json
+network_monitor_*.log
