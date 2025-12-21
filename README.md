@@ -31,6 +31,13 @@ plaud/
 │   │   ├── network_monitor_*.log
 │   │   └── network_logs_*.json
 │   └── README.md
+├── plaud_api_service/    # Работа с Plaud API (директории и записи)
+│   ├── client.py
+│   ├── requirements.txt
+│   └── README.md
+├── plaud_cookie_service/ # Получение куки из Chrome и запросы к Plaud API
+│   ├── client.py
+│   └── requirements.txt
 ├── start.sh              # Запуск виртуалки и browser_monitor по абсолютному пути
 └── README.md
 ```
@@ -58,6 +65,34 @@ python browser_monitor/browser_monitor.py https://example.com
 ```
 
 Все логи сохраняются в папку `browser_monitor/logs/`.
+
+### Работа с Plaud API (директории и записи)
+
+```bash
+cd plaud_api_service
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Создайте файл .token с bearer токеном
+echo "your_token_here" > .token
+
+# Получить список всех директорий
+python client.py --list-tags
+
+# Получить записи из конкретной директории
+python client.py --list-files --tag-id <TAG_ID> --category-id nubes --limit 100
+```
+
+Подробная документация: [plaud_api_service/README.md](plaud_api_service/README.md)
+
+### Использование куки Chrome для запросов к Plaud
+
+```bash
+python plaud_cookie_service/client.py --print-cookies
+python plaud_cookie_service/client.py --endpoint "https://api.plaud.ai/user/me"
+```
+Зависимости: `pip install -r plaud_cookie_service/requirements.txt`. Для macOS используйте `--profile "~/Library/Application Support/Google/Chrome/Default/Cookies"` при необходимости.
 
 Подробная документация: [browser_monitor/README.md](browser_monitor/README.md)
 
