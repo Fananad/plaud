@@ -18,7 +18,32 @@ except ImportError:
     )
     raise
 
+import gzip
+
 TOKEN_FILE = Path(__file__).parent / ".token"
+
+
+def fix_double_encoding(text: str) -> str:
+    """
+    Исправляет двойную кодировку UTF-8.
+    Если текст был закодирован в UTF-8 дважды, он будет содержать символы типа Ð, Ñ и т.д.
+    Эта функция пытается исправить такую проблему.
+    """
+    if not isinstance(text, str):
+        return text
+    
+    try:
+        # Пробуем исправить двойную кодировку: кодируем как latin-1 и декодируем как utf-8
+        # Это работает, если текст был неправильно декодирован из UTF-8 как Latin-1
+        fixed = text.encode('latin-1').decode('utf-8')
+        # Проверяем, что исправление помогло (нет характерных символов двойной кодировки)
+        if '\x00' not in fixed and not any(ord(c) > 0x10FFFF for c in fixed):
+            return fixed
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    
+    # Если не получилось исправить, возвращаем исходный текст
+    return text
 
 
 def load_token() -> str:
@@ -77,6 +102,86 @@ def get_file_summary(session, file_id: str):
     return None
 
 
+def get_all_transcripts_from_detail(session, file_id: str):
+    """Получает все расшифровки файла через /file/detail/{id}."""
+    try:
+        endpoint = f"https://api.plaud.ai/file/detail/{file_id}"
+        response = session.get(endpoint, timeout=30)
+        
+        if response.status_code != 200:
+            return []
+        
+        data = response.json()
+        if data.get("status") != 0:
+            return []
+        
+        detail = data.get("data", {})
+        content_list = detail.get("content_list", [])
+        
+        transcripts = []
+        
+        for content in content_list:
+            data_type = content.get("data_type", "")
+            data_link = content.get("data_link", "")
+            data_id = content.get("data_id", "")
+            data_tab_name = content.get("data_tab_name", "")
+            data_title = content.get("data_title", "")
+            
+            if not data_link:
+                continue
+            
+            try:
+                # Скачиваем содержимое из S3 (используем requests напрямую для внешних URL)
+                resp = requests.get(data_link, timeout=30)
+                if resp.status_code != 200:
+                    continue
+                
+                # Распаковываем если gzip
+                if data_link.endswith(".gz"):
+                    content_data = gzip.decompress(resp.content).decode("utf-8")
+                else:
+                    # Используем content.decode вместо text для явного указания кодировки
+                    # Это предотвращает проблемы с автоматическим определением кодировки
+                    try:
+                        content_data = resp.content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # Если не получается декодировать как UTF-8, пробуем исправить двойную кодировку
+                        try:
+                            # Пробуем декодировать как latin-1 и перекодировать в utf-8
+                            content_data = resp.content.decode("latin-1").encode("latin-1").decode("utf-8")
+                        except:
+                            # В крайнем случае используем text с обработкой ошибок
+                            content_data = resp.text
+                
+                # Парсим JSON
+                try:
+                    parsed = json.loads(content_data)
+                    transcripts.append({
+                        "type": data_type,
+                        "data_id": data_id,
+                        "data_tab_name": data_tab_name,
+                        "data_title": data_title,
+                        "content": parsed
+                    })
+                except json.JSONDecodeError:
+                    # Если не JSON, пробуем как текст
+                    if content_data.strip():
+                        transcripts.append({
+                            "type": data_type,
+                            "data_id": data_id,
+                            "data_tab_name": data_tab_name,
+                            "data_title": data_title,
+                            "content": content_data
+                        })
+            except Exception as e:
+                # Пропускаем ошибки при скачивании отдельных расшифровок
+                continue
+        
+        return transcripts
+    except Exception as e:
+        return []
+
+
 def export_file_to_md(session, file_id: str, filename: str, file_info: dict = None) -> str:
     """Экспортирует файл в формат Markdown."""
     # Пробуем разные варианты endpoint'ов для экспорта
@@ -117,7 +222,85 @@ def export_file_to_md(session, file_id: str, filename: str, file_info: dict = No
         except Exception as e:
             continue
     
-    # Если не получилось через export, используем /ai/query_source для получения содержимого
+    # Пробуем получить все расшифровки через /file/detail/{id}
+    transcripts = get_all_transcripts_from_detail(session, file_id)
+    
+    if transcripts:
+        md_parts = []
+        title = filename
+        
+        # Извлекаем содержимое из всех расшифровок
+        # Сортируем по порядку: transaction (Full transcript), outline, auto_sum_note (Summary), sum_multi_note, consumer_note
+        type_order = {"transaction": 1, "outline": 2, "auto_sum_note": 3, "sum_multi_note": 4, "consumer_note": 5}
+        sorted_transcripts = sorted(transcripts, key=lambda x: type_order.get(x.get("type", ""), 99))
+        
+        for transcript in sorted_transcripts:
+            data_type = transcript.get("type", "")
+            content = transcript.get("content", "")
+            data_tab_name = transcript.get("data_tab_name", "")
+            data_title = transcript.get("data_title", "")
+            
+            if data_type == "transaction" and isinstance(content, list):
+                # Full transcript - транскрипция, список объектов с content
+                for item in content:
+                    if isinstance(item, dict) and "content" in item:
+                        md_parts.append(item["content"])
+            elif data_type == "outline" and isinstance(content, list):
+                # План/содержание - добавляем как заголовки
+                outline_parts = []
+                for item in content:
+                    if isinstance(item, dict) and "topic" in item:
+                        outline_parts.append(f"- {item['topic']}")
+                if outline_parts:
+                    md_parts.append("## План\n\n" + "\n".join(outline_parts))
+            elif data_type == "auto_sum_note":
+                # Summary - автоматическое резюме
+                title = data_tab_name if data_tab_name else "Summary"
+                if isinstance(content, str) and content.strip():
+                    md_parts.append(f"## {title}\n\n{content}")
+                elif isinstance(content, dict):
+                    # Извлекаем ai_content из dict
+                    text = content.get("ai_content") or content.get("content") or content.get("text") or content.get("summary")
+                    if text and text.strip():
+                        md_parts.append(f"## {title}\n\n{text}")
+            elif data_type == "sum_multi_note":
+                # Meeting Highlights или Quantitative Data
+                title = data_tab_name if data_tab_name else (data_title if data_title else "Summary")
+                if isinstance(content, str) and content.strip():
+                    md_parts.append(f"## {title}\n\n{content}")
+                elif isinstance(content, dict):
+                    # Извлекаем ai_content из dict
+                    text = content.get("ai_content") or content.get("content") or content.get("text") or content.get("summary")
+                    if text and text.strip():
+                        md_parts.append(f"## {title}\n\n{text}")
+                elif isinstance(content, list):
+                    # Если это список, пытаемся извлечь текст из элементов
+                    text_parts = []
+                    for item in content:
+                        if isinstance(item, dict):
+                            item_text = item.get("ai_content") or item.get("content") or item.get("text") or item.get("summary")
+                            if item_text:
+                                text_parts.append(item_text)
+                        elif isinstance(item, str):
+                            text_parts.append(item)
+                    if text_parts:
+                        md_parts.append(f"## {title}\n\n" + "\n\n".join(text_parts))
+            elif data_type == "consumer_note" and isinstance(content, str):
+                # Заметки пользователя
+                if content.strip():
+                    # Исправляем возможную двойную кодировку UTF-8
+                    fixed_content = fix_double_encoding(content)
+                    md_parts.append(f"## Заметки\n\n{fixed_content}")
+            elif isinstance(content, str) and content.strip():
+                # Просто текст (fallback)
+                md_parts.append(content)
+        
+        if md_parts:
+            md_content = f"# {title}\n\n"
+            md_content += "\n\n".join(md_parts)
+            return md_content
+    
+    # Если не получилось через /file/detail, используем /ai/query_source как fallback
     try:
         headers = {"file-id": file_id}
         response = session.get("https://api.plaud.ai/ai/query_source", headers=headers, timeout=30)
@@ -134,7 +317,6 @@ def export_file_to_md(session, file_id: str, filename: str, file_info: dict = No
                             # Если это JSON строка, парсим её
                             if isinstance(content, str):
                                 try:
-                                    import json
                                     content = json.loads(content)
                                     if isinstance(content, list):
                                         for item in content:
