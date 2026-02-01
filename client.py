@@ -3,6 +3,7 @@
 Экспорт всех папок Plaud в Markdown.
 """
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -283,6 +284,54 @@ def export_folder(session, folder_name: str, tag_id: str, export_base: Path, del
     print(f"  Итого: {exported} записей, ошибок {failed}", flush=True)
 
 
+def git_sync(export_base: Path) -> bool:
+    """В папке экспорта: add → commit → pull --rebase → push. Pull после коммита подтягивает изменения из репы и ставит наш коммит сверху."""
+    if not (export_base / ".git").exists():
+        print("  ⚠️ Папка экспорта не является git-репозиторием, git не выполнен.", flush=True)
+        return False
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    msg = f"Plaud export {date_str}"
+    try:
+        subprocess.run(["git", "add", "."], cwd=export_base, check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "commit", "-m", msg],
+            cwd=export_base,
+            capture_output=True,
+            text=True,
+        )
+        if commit.returncode != 0:
+            if "nothing to commit" in (commit.stderr or "") or "nothing to commit" in (commit.stdout or ""):
+                print("  ℹ️ Нет изменений для коммита.", flush=True)
+            else:
+                print(f"  ❌ Git commit: {commit.stderr or commit.stdout}", flush=True)
+                return True
+        pull = subprocess.run(
+            ["git", "pull", "--rebase"],
+            cwd=export_base,
+            capture_output=True,
+            text=True,
+        )
+        if pull.returncode != 0:
+            err = (pull.stderr or pull.stdout or "").strip()
+            print(f"  ❌ git pull: {err}", flush=True)
+            return False
+        push = subprocess.run(
+            ["git", "push"],
+            cwd=export_base,
+            capture_output=True,
+            text=True,
+        )
+        if push.returncode != 0:
+            err = (push.stderr or push.stdout or "").strip()
+            print(f"  ❌ git push: {err}", flush=True)
+            return False
+        print(f"  ✅ Git: add → commit («{msg}») → pull → push", flush=True)
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  ❌ Git ошибка: {e}", flush=True)
+        return False
+
+
 def move_to_trash(session, file_ids: list) -> bool:
     """Перенос записей в корзину. POST api.plaud.ai/file/trash/ с массивом id."""
     if not file_ids:
@@ -299,7 +348,7 @@ def move_to_trash(session, file_ids: list) -> bool:
     return data.get("status") == 0
 
 
-def export_all_folders(session, export_dir: str = "exports", delete: bool = False):
+def export_all_folders(session, export_dir: str = "obsi", delete: bool = False, git: bool = False):
     export_base = (
         REPO_ROOT / export_dir
         if not Path(export_dir).is_absolute()
@@ -334,6 +383,8 @@ def export_all_folders(session, export_dir: str = "exports", delete: bool = Fals
             print(f"  ❌ {e}")
         print()
     print("Готово.")
+    if git:
+        git_sync(export_base)
 
 
 def main():
@@ -348,13 +399,18 @@ def main():
     )
     parser.add_argument(
         "--export-dir",
-        default="exports",
-        help="Папка для экспорта (по умолчанию: exports)",
+        default="obsi",
+        help="Папка для экспорта (по умолчанию: obsi)",
     )
     parser.add_argument(
         "--delete",
         action="store_true",
         help="После записи каждой записи на диск переносить её в корзину в Plaud",
+    )
+    parser.add_argument(
+        "--git",
+        action="store_true",
+        help="После экспорта в папке экспорта: git pull, add, commit, push",
     )
     args = parser.parse_args()
     session = build_session(load_token())
@@ -395,8 +451,10 @@ def main():
             sys.stderr.write(f"Ошибка: {e}\n")
             sys.exit(1)
         print("Готово.", flush=True)
+        if args.git:
+            git_sync(export_base)
     else:
-        export_all_folders(session, args.export_dir, args.delete)
+        export_all_folders(session, args.export_dir, args.delete, args.git)
 
 
 if __name__ == "__main__":

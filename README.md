@@ -18,7 +18,7 @@ echo "your_token_here" > .token
 
 ## Запуск
 
-**Все папки** — экспорт в `exports/`:
+**Все папки** — экспорт в `obsi/`:
 
 ```bash
 python client.py
@@ -45,4 +45,4 @@ python client.py --delete
 python client.py --folder daily --delete
 ```
 
-Файлы сохраняются в `exports/<название_папки>/` в формате Markdown (транскрипция, заметки, summary).
+Файлы сохраняются в `obsi/<название_папки>/` в формате Markdown (транскрипция, заметки, summary).
