@@ -214,7 +214,7 @@ def export_file_to_md(session, file_id: str, filename: str, file_info: dict = No
     return f"# {title}\n\n" + "\n\n".join(md_parts)
 
 
-def export_folder(session, folder_name: str, tag_id: str, export_base: Path):
+def export_folder(session, folder_name: str, tag_id: str, export_base: Path, delete: bool = False):
     params = {
         "skip": 0,
         "limit": 99999,
@@ -242,35 +242,63 @@ def export_folder(session, folder_name: str, tag_id: str, export_base: Path):
         return
     export_path = export_base / folder_name
     export_path.mkdir(parents=True, exist_ok=True)
-    print(f"  📁 {export_path.absolute()} ({len(files)} файлов)")
+    total = len(files)
+    print(f"  📁 {export_path.absolute()} — {total} записей", flush=True)
     exported = failed = 0
     for i, file_info in enumerate(files, 1):
         file_id = file_info.get("id")
         filename = file_info.get("filename", file_id)
-        safe_name = "".join(
-            c for c in filename if c.isalnum() or c in (" ", "-", "_", ".")
-        ).strip() or file_id
         md_content = export_file_to_md(session, file_id, filename, file_info)
         if md_content:
             try:
+                safe_name = "".join(
+                    c for c in filename if c.isalnum() or c in (" ", "-", "_", ".")
+                ).strip() or file_id
                 (export_path / f"{safe_name}.md").write_text(md_content, encoding="utf-8")
                 exported += 1
+                if delete:
+                    if move_to_trash(session, [file_id]):
+                        print(f"  Экспортирована запись {i}/{total} → в корзину", flush=True)
+                    else:
+                        print(f"  Экспортирована запись {i}/{total} (в корзину не перенесена)", flush=True)
+                else:
+                    print(f"  Экспортирована запись {i}/{total}", flush=True)
             except Exception as e:
-                print(f"  ❌ {filename}: {e}")
+                print(f"  ❌ Запись {i}/{total}: {e}", flush=True)
                 failed += 1
         else:
+            print(f"  ❌ Запись {i}/{total}: нет содержимого", flush=True)
             failed += 1
         time.sleep(0.5)
-    print(f"  ✅ {exported}, ошибок {failed}")
+    print(f"  Итого: {exported} записей, ошибок {failed}", flush=True)
 
 
-def export_all_folders(session, export_dir: str = "exports"):
+def move_to_trash(session, file_ids: list) -> bool:
+    """Перенос записей в корзину. POST api.plaud.ai/file/trash/ с массивом id."""
+    if not file_ids:
+        return True
+    response = session.post(
+        "https://api.plaud.ai/file/trash/",
+        json=file_ids,
+        timeout=30,
+        headers={"content-type": "application/json;charset=UTF-8"},
+    )
+    if response.status_code != 200:
+        return False
+    data = response.json()
+    return data.get("status") == 0
+
+
+def export_all_folders(session, export_dir: str = "exports", delete: bool = False):
     export_base = (
         REPO_ROOT / export_dir
         if not Path(export_dir).is_absolute()
         else Path(export_dir)
     )
-    print("📂 Список папок...")
+    if delete:
+        print("📂 Список папок (после экспорта записи переносятся в корзину)...")
+    else:
+        print("📂 Список папок...")
     response = session.get("https://api.plaud.ai/filetag/", timeout=30)
     if response.status_code != 200:
         sys.stderr.write(f"Ошибка: {response.status_code}\n")
@@ -291,7 +319,7 @@ def export_all_folders(session, export_dir: str = "exports"):
             continue
         print(f"[{i}/{len(tags)}] 📁 {name}")
         try:
-            export_folder(session, name, tag_id, export_base)
+            export_folder(session, name, tag_id, export_base, delete)
         except Exception as e:
             print(f"  ❌ {e}")
         print()
@@ -300,15 +328,65 @@ def export_all_folders(session, export_dir: str = "exports"):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Экспорт всех папок Plaud в Markdown.")
+    parser = argparse.ArgumentParser(
+        description="Plaud: экспорт в Markdown, перенос в корзину."
+    )
+    parser.add_argument(
+        "--folder",
+        metavar="NAME",
+        help="Экспортировать только эту папку (например: daily, nubes)",
+    )
     parser.add_argument(
         "--export-dir",
         default="exports",
         help="Папка для экспорта (по умолчанию: exports)",
     )
+    parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="После записи каждой записи на диск переносить её в корзину в Plaud",
+    )
     args = parser.parse_args()
     session = build_session(load_token())
-    export_all_folders(session, args.export_dir)
+
+    export_base = (
+        REPO_ROOT / args.export_dir
+        if not Path(args.export_dir).is_absolute()
+        else Path(args.export_dir)
+    )
+    if args.folder:
+        print(f"📂 Поиск папки «{args.folder}»...", flush=True)
+        response = session.get("https://api.plaud.ai/filetag/", timeout=30)
+        if response.status_code != 200:
+            sys.stderr.write(f"Ошибка: {response.status_code}\n")
+            sys.exit(1)
+        data = response.json()
+        if data.get("status") != 0:
+            sys.stderr.write(f"Ошибка API: {data.get('msg', 'Unknown')}\n")
+            sys.exit(1)
+        tags = data.get("data_filetag_list", [])
+        found = None
+        for tag in tags:
+            if tag.get("name", "").strip().lower() == args.folder.strip().lower():
+                found = tag
+                break
+        if not found:
+            sys.stderr.write(f"Папка «{args.folder}» не найдена. Доступные: {', '.join(t.get('name', '') for t in tags)}\n")
+            sys.exit(1)
+        name = found.get("name", "")
+        tag_id = found.get("id")
+        if args.delete:
+            print(f"✅ Папка «{name}» (после экспорта — в корзину)\n", flush=True)
+        else:
+            print(f"✅ Папка «{name}»\n", flush=True)
+        try:
+            export_folder(session, name, tag_id, export_base, args.delete)
+        except Exception as e:
+            sys.stderr.write(f"Ошибка: {e}\n")
+            sys.exit(1)
+        print("Готово.", flush=True)
+    else:
+        export_all_folders(session, args.export_dir, args.delete)
 
 
 if __name__ == "__main__":

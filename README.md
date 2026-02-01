@@ -18,16 +18,31 @@ echo "your_token_here" > .token
 
 ## Запуск
 
-Экспорт всех директорий в папку `exports/`:
+**Все папки** — экспорт в `exports/`:
 
 ```bash
 python client.py
 ```
 
-Указать другую папку для экспорта:
+**Одна папка** — по имени (например `daily`, `nubes`):
+
+```bash
+python client.py --folder daily
+python client.py --folder nubes
+```
+
+Другая папка для экспорта:
 
 ```bash
 python client.py --export-dir my_exports
+python client.py --folder daily --export-dir my_exports
+```
+
+**После экспорта переносить записи в корзину** в Plaud (по одной после записи на диск):
+
+```bash
+python client.py --delete
+python client.py --folder daily --delete
 ```
 
 Файлы сохраняются в `exports/<название_папки>/` в формате Markdown (транскрипция, заметки, summary).
