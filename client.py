@@ -16,6 +16,7 @@ except ImportError:
     raise
 
 import gzip
+from datetime import datetime
 
 REPO_ROOT = Path(__file__).resolve().parent
 TOKEN_FILE = REPO_ROOT / ".token"
@@ -139,7 +140,6 @@ def export_file_to_md(session, file_id: str, filename: str, file_info: dict = No
                             s = file_info["duration"] / 1000
                             md += f"**Длительность:** {int(s // 60)}:{int(s % 60):02d}\n"
                         if file_info.get("start_time"):
-                            from datetime import datetime
                             md += f"**Дата:** {datetime.fromtimestamp(file_info['start_time'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}\n"
                     md += "\n*Транскрипция недоступна.*"
                     return md
@@ -254,7 +254,17 @@ def export_folder(session, folder_name: str, tag_id: str, export_base: Path, del
                 safe_name = "".join(
                     c for c in filename if c.isalnum() or c in (" ", "-", "_", ".")
                 ).strip() or file_id
-                (export_path / f"{safe_name}.md").write_text(md_content, encoding="utf-8")
+                start_time = file_info.get("start_time")
+                if start_time is not None:
+                    dt = datetime.fromtimestamp(start_time / 1000)
+                    year_dir = str(dt.year)
+                    month_dir = f"{dt.month:02d}"
+                else:
+                    year_dir = "unknown"
+                    month_dir = "unknown"
+                file_dir = export_path / year_dir / month_dir
+                file_dir.mkdir(parents=True, exist_ok=True)
+                (file_dir / f"{safe_name}.md").write_text(md_content, encoding="utf-8")
                 exported += 1
                 if delete:
                     if move_to_trash(session, [file_id]):
