@@ -120,7 +120,9 @@ def get_all_transcripts_from_detail(session, file_id: str):
         return []
 
 
-def export_file_to_md(session, file_id: str, filename: str, file_info: dict = None):
+def export_file_to_md(session, file_id: str, filename: str, file_info: dict = None, folder_name: str = ""):
+    tag_prefix = f"tag #{folder_name}\n\n" if folder_name else ""
+
     transcripts = get_all_transcripts_from_detail(session, file_id)
     if not transcripts:
         try:
@@ -143,7 +145,7 @@ def export_file_to_md(session, file_id: str, filename: str, file_info: dict = No
                         if file_info.get("start_time"):
                             md += f"**Дата:** {datetime.fromtimestamp(file_info['start_time'] / 1000).strftime('%Y-%m-%d %H:%M:%S')}\n"
                     md += "\n*Транскрипция недоступна.*"
-                    return md
+                    return tag_prefix + md
         except Exception:
             pass
         return None
@@ -212,7 +214,7 @@ def export_file_to_md(session, file_id: str, filename: str, file_info: dict = No
 
     if not md_parts:
         return None
-    return f"# {title}\n\n" + "\n\n".join(md_parts)
+    return tag_prefix + f"# {title}\n\n" + "\n\n".join(md_parts)
 
 
 def export_folder(session, folder_name: str, tag_id: str, export_base: Path, delete: bool = False):
@@ -249,7 +251,7 @@ def export_folder(session, folder_name: str, tag_id: str, export_base: Path, del
     for i, file_info in enumerate(files, 1):
         file_id = file_info.get("id")
         filename = file_info.get("filename", file_id)
-        md_content = export_file_to_md(session, file_id, filename, file_info)
+        md_content = export_file_to_md(session, file_id, filename, file_info, folder_name)
         if md_content:
             try:
                 safe_name = "".join(
